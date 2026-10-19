@@ -1,0 +1,31 @@
+# build outputs
+/out/
+/build/
+/build-*/
+/gen/
+/android/native-libs/
+/android/app/build/
+/android/build/
+/android/.gradle/
+/android/local.properties
+/tools/venv
+__pycache__/
+*.pyc
+
+# downloaded third-party sources (tools/fetch_deps.sh)
+/third_party/
+
+# game files never belong in this repository
+*.zip
+*.pak
+*.exe
+*.dll
+*.wwd
+*.avi
+*.smk
+*.FEC
+*.REZ
+
+# signing keys
+*.jks
+*.keystore

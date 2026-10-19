@@ -1,0 +1,9 @@
+* text=auto
+# scripts run inside the Linux container even when the repository is cloned on Windows
+*.sh text eol=lf
+android/gradlew text eol=lf
+Dockerfile text eol=lf
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.png binary
+*.jar binary

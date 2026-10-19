@@ -1,0 +1,126 @@
+plugins {
+    id 'com.android.application'
+}
+
+// -Pgame=<name> selects games/<name>/game.ini: app id, name, exe and required files.
+def gameName = project.findProperty('game') ?: 'claw'
+def iniFile = rootProject.file("../games/${gameName}/game.ini")
+if (!iniFile.exists()) throw new GradleException("no ${iniFile}")
+// Same rules as runtime/gamecfg.c: [section], key = value, '#'/';' comments.
+def ini = [:].withDefault { [:].withDefault { [] } }
+def section = ''
+iniFile.eachLine('UTF-8') { raw ->
+    def line = raw.replaceAll(/(^|\s)[#;].*/, '').trim()
+    if (!line) return
+    if (line.startsWith('[')) { section = line.substring(1, line.indexOf(']')).trim().toLowerCase(); return }
+    def eq = line.indexOf('=')
+    if (eq > 0) ini[section][line.substring(0, eq).trim().toLowerCase()] << line.substring(eq + 1).trim()
+}
+def cfg = { String sec, String key, String dflt -> def v = ini[sec][key]; v ? v[-1] : dflt }
+def javaStr = { String s -> '"' + s.replace('\\', '\\\\').replace('"', '\\"') + '"' }
+def javaArr = { String s -> 'new String[] {' + (s ? s.split(/[\s,]+/).collect { javaStr(it) }.join(', ') : '') + '}' }
+
+// Optional: -Ppack=/path/to/game.pak bundles your game files (made by
+// tools/mkpack.py) into the APK; the game reads them straight from the APK.
+// Without it the app asks you to pick the game folder on the device.
+def pack = project.findProperty('pack')
+// -Pabis=arm64-v8a,x86_64 adds the emulator ABI (phones only need arm64-v8a).
+def abis = (project.findProperty('abis') ?: 'arm64-v8a').split(',')
+
+android {
+    namespace 'org.gameport.app'
+    compileSdk 36
+
+    defaultConfig {
+        applicationId cfg('android', 'app_id', "org.gameport.${gameName}")
+        minSdk 24
+        targetSdk 35
+        // optional: CLAW_VERSION / CLAW_VERSION_CODE version a build
+        versionCode Integer.parseInt(System.getenv('CLAW_VERSION_CODE') ?: '1')
+        versionName System.getenv('CLAW_VERSION') ?: '1.0'
+        resValue 'string', 'app_name', cfg('android', 'app_name', cfg('game', 'short_name', gameName))
+        buildConfigField 'String', 'GAME_TITLE', javaStr(cfg('game', 'title', gameName))
+        buildConfigField 'String', 'FILES_HINT', javaStr(cfg('game', 'files_hint', cfg('game', 'exe', 'game.exe')))
+        buildConfigField 'String[]', 'REQUIRED', javaArr(cfg('game', 'required', cfg('game', 'exe', 'game.exe')))
+        buildConfigField 'String[]', 'COPY_SKIP', javaArr(cfg('android', 'copy_skip', ''))
+        ndk {
+            abiFilters(*abis)
+        }
+    }
+
+    buildFeatures {
+        buildConfig true
+    }
+
+    sourceSets {
+        main {
+            jniLibs.srcDirs = ['../native-libs']
+            if (pack) {
+                assets.srcDirs += ["$buildDir/gameassets"]
+            }
+            assets.srcDirs += ["$buildDir/portassets"]
+            // the game's own launcher icon (tools/make_icon.py games/<name>); builds with
+            // bundled game data prefer res-bundled (e.g. art that may not be redistributed)
+            def gameRes = rootProject.file("../games/${gameName}/res")
+            def bundledRes = rootProject.file("../games/${gameName}/res-bundled")
+            if (pack && bundledRes.isDirectory()) {
+                res.srcDirs += [bundledRes]
+            } else if (gameRes.isDirectory()) {
+                res.srcDirs += [gameRes]
+            }
+        }
+    }
+
+    // Release signing: a keystore named by the environment (CLAW_KEYSTORE, see README)
+    // keeps the same signature across builds, so new builds install over old ones and
+    // keep saves. Without it the SDK's debug key is used.
+    def ks = System.getenv('CLAW_KEYSTORE')
+    signingConfigs {
+        if (ks && file(ks).exists()) {
+            release {
+                storeFile file(ks)
+                storePassword System.getenv('CLAW_KEYSTORE_PASSWORD')
+                keyAlias System.getenv('CLAW_KEY_ALIAS')
+                keyPassword System.getenv('CLAW_KEY_PASSWORD') ?: System.getenv('CLAW_KEYSTORE_PASSWORD')
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig = (ks && file(ks).exists()) ? signingConfigs.release : signingConfigs.debug
+        }
+    }
+
+    androidResources {
+        // stored uncompressed so the game can read it in place
+        noCompress 'pak', 'sf2'
+    }
+
+    lint {
+        abortOnError false
+        checkReleaseBuilds false
+    }
+}
+
+// Files the port supplies itself (assets/port/): the General MIDI soundfont for
+// the games' MIDI music (third_party/soundfont, GeneralUser GS).
+def soundfont = file("$rootDir/../third_party/soundfont/GeneralUser-GS.sf2")
+tasks.register('copyPortAssets', Copy) {
+    if (soundfont.exists()) {
+        from(soundfont)
+        rename { 'soundfont.sf2' }
+    }
+    into "$buildDir/portassets/port"
+}
+preBuild.dependsOn 'copyPortAssets'
+
+if (pack) {
+    tasks.register('copyPack', Copy) {
+        from(pack)
+        into "$buildDir/gameassets"
+        rename { 'game.pak' }
+    }
+    preBuild.dependsOn 'copyPack'
+}

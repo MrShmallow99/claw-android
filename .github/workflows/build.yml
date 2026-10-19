@@ -1,0 +1,47 @@
+# Continuous integration: checks that the toolchain and everything that doesn't need the
+# game builds. The game's native code can't be built here: it is produced by recompiling
+# your own copy of CLAW.exe (see README). This project publishes source code only.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Restore the dependency cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            third_party
+            build-luajit-*
+            build-ffmpeg-*
+          key: deps-${{ runner.os }}-${{ hashFiles('tools/fetch_deps.sh', 'tools/build_ffmpeg.sh', 'tools/build_luajit.sh', 'tools/luajit_guest32.py', 'tools/luajit_guest32_ccall.c', 'runtime/lua/port_lua_io.h') }}
+
+      - name: Build the toolchain image
+        run: docker build -t claw-android-build .
+
+      - name: Build the dependencies, the packer and the Android app shell
+        run: |
+          docker run --rm -v "$PWD:/src" -e GRADLE_USER_HOME=/src/build/gradle-home claw-android-build bash -euo pipefail -c '
+            tools/fetch_deps.sh
+            python3 -m py_compile recomp/*.py tools/*.py
+            tools/build_luajit.sh android > /dev/null
+            [ -f build-ffmpeg-android/lib/libavcodec.a ] || tools/build_ffmpeg.sh android > /dev/null
+            [ -f build-ffmpeg-host/lib/libavcodec.a ] || tools/build_ffmpeg.sh host > /dev/null
+            cmake -S . -B build/host -G Ninja -DCMAKE_BUILD_TYPE=Release -DGAME=claw > /dev/null
+            cmake --build build/host --target devicepack
+            cd android && ./gradlew --no-daemon -q assembleRelease -Pgame=claw
+          '
+          sudo chown -R "$(id -u):$(id -g)" .
